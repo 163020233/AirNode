@@ -1,0 +1,6 @@
+--c99 -c --cpu Cortex-M4.fp -D__EVAL -g -O3 --apcs=interwork --split_sections -I../Core/Inc -I../Drivers/STM32F4xx_HAL_Driver/Inc -I../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I../Drivers/CMSIS/Device/ST/STM32F4xx/Include -I../Drivers/CMSIS/Include
+-I D:\work\Project\Overlay_project\STM32CBMX\AirNode\MDK-ARM\RTE
+-I D:\work\tools\KEIL_ARM\ARM\CMSIS\6.1.0\CMSIS\Core\Include
+-I D:\work\tools\KEIL_ARM\Keil\STM32F4xx_DFP\3.1.1\Device\Include
+-D__UVISION_VERSION="514" -D_RTE_ -DSTM32F407xx -DUSE_HAL_DRIVER -DSTM32F407xx
+-o airnode\main.o --omf_browse airnode\main.crf --depend airnode\main.d "../Core/Src/main.c"
