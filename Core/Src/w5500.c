@@ -320,8 +320,8 @@ int w5500_tcp_recv(uint8_t *buf, uint16_t maxlen)
     /* 执行 RECV 命令使更新生效 */
     w5500_sock_cmd(sn, CMD_RECV);
 
-    // 3. 打印读指针的变化情况
-    LOG_INFO(TAG_W5500, "RX pointer shifted: 0x%04X -> 0x%04X (CMD_RECV confirmed)", old_rd, rx_rd);
+    // // 3. 打印读指针的变化情况
+    // LOG_INFO(TAG_W5500, "RX pointer shifted: 0x%04X -> 0x%04X (CMD_RECV confirmed)", old_rd, rx_rd);
 
     return len;
 }

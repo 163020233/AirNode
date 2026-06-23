@@ -224,7 +224,6 @@ void StartNetTask(void *argument)
 
     if (len > 0)
     {
-      LOG_INFO(TAG_RTOS, "Client connected"); // 提示：连接成功并收到数据
       /* 确保以 '\0' 结尾 */
       if (len < NET_BUF_SIZE) net_buf[len] = '\0';
       else net_buf[NET_BUF_SIZE - 1] = '\0';
@@ -234,7 +233,7 @@ void StartNetTask(void *argument)
     }
     else if (len == -1)
     {
-      LOG_INFO(TAG_RTOS, "Client disconnected, re-listening...");
+      LOG_DEBUG(TAG_RTOS, "Client disconnected, re-listening...");
       /* 核心修复：执行完整的断开与重新监听流程 */
       w5500_tcp_close();
       w5500_tcp_server_open(W5500_TCP_PORT);
@@ -307,7 +306,7 @@ void StartRouterTask(void *argument)
     command[0] = '\0';
     if (json_get_string((const char *)net_buf, "command", command, sizeof(command)) != 0)
     {
-      LOG_INFO(TAG_RTOS, "No command found, skip");
+      LOG_DEBUG(TAG_RTOS, "No command found, skip");
       continue;
     }
 
@@ -325,7 +324,7 @@ void StartRouterTask(void *argument)
       LOG_INFO(TAG_RTOS, "servo_set: ch=%d, angle=%d", channel, angle);
       osMessageQueuePut(ServoQueueHandle, &angle, 0, 0);
 
-      LOG_INFO(TAG_RTOS, "Response sent");
+      LOG_DEBUG(TAG_RTOS, "Response sent");
       snprintf(resp, sizeof(resp),
                "{\"command\":\"servo_set\",\"code\":\"200\",\"cseq\":\"%s\",\"msg\":\"ok\"}"
                MSG_DELIMITER, cseq);
@@ -372,19 +371,6 @@ void StartServoTask(void *argument)
   for(;;)
   {
     /* 等待角度指令（阻塞） */
-    LOG_INFO(TAG_SERVO, "Waiting for angle...");
+    LOG_DEBUG(TAG_SERVO, "Waiting for angle...");
     osMessageQueueGet(ServoQueueHandle, &angle, NULL, osWaitForever);
-    LOG_INFO(TAG_SERVO, "Got angle: %d", angle);
-
-    /* 设置舵机角度 */
-    servo_set_angle(angle);
-    LOG_INFO(TAG_SERVO, "Angle set done: %d", angle);
-  }
-  /* USER CODE END StartServoTask */
-}
-
-/* Private application code --------------------------------------------------*/
-/* USER CODE BEGIN Application */
-
-/* USER CODE END Application */
-
+    LOG_INFO(TAG_SERVO, "Got angle: %
