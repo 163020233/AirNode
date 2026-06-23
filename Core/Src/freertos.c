@@ -28,6 +28,7 @@
 #include "w5500.h"
 #include "servo.h"
 #include "simple_json.h"
+#include "debug_log.h"
 #include "usart.h"
 #include <string.h>
 #include <stdio.h>
@@ -43,13 +44,6 @@
 #define NET_BUF_SIZE    512     // 网络接收缓冲区大小
 #define SEND_BUF_SIZE   256     // 发送缓冲区大小
 #define MSG_DELIMITER   "\r\n\r\n"  // 消息分隔符（Android 端用）
-
-/* 串口日志宏（USART1, 115200） */
-#define LOG(fmt, ...) do { \
-    char _logbuf[128]; \
-    int _n = snprintf(_logbuf, sizeof(_logbuf), "[RTOS] " fmt "\r\n", ##__VA_ARGS__); \
-    if (_n > 0) HAL_UART_Transmit(&huart1, (uint8_t*)_logbuf, _n, 100); \
-} while(0)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -192,35 +186,34 @@ void StartNetTask(void *argument)
   w5500_network_config(ip, mask, gw);
 
   /* 打印网络配置 */
-  LOG("W5500 initialized");
-  LOG("IP: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
-  LOG("Mask: %d.%d.%d.%d", mask[0], mask[1], mask[2], mask[3]);
-  LOG("GW: %d.%d.%d.%d", gw[0], gw[1], gw[2], gw[3]);
+  LOG_INFO(TAG_RTOS, "W5500 initialized");
+  LOG_INFO(TAG_RTOS, "IP: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+  LOG_INFO(TAG_RTOS, "Mask: %d.%d.%d.%d", mask[0], mask[1], mask[2], mask[3]);
+  LOG_INFO(TAG_RTOS, "GW: %d.%d.%d.%d", gw[0], gw[1], gw[2], gw[3]);
   uint8_t mac[6] = W5500_MAC_ADDR;
-  LOG("MAC: %02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  LOG("Port: %d", W5500_TCP_PORT);
+  LOG_INFO(TAG_RTOS, "MAC: %02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  LOG_INFO(TAG_RTOS, "Port: %d", W5500_TCP_PORT);
 
   /* Step 3: 打开 TCP Server */
   while (w5500_tcp_server_open(W5500_TCP_PORT) != 0)
   {
-    /* 如果打开失败，等 1 秒重试 */
     osDelay(1000);
   }
 
   /* Step 4: 收发循环 */
   for(;;)
   {
-    /* 等待建立连接 */
-    if (!w5500_tcp_established())
-    {
-      osDelay(100);
-      continue;
-    }
-
-    /* ---- 收数据 ---- */
+    /*
+     * 直接尝试接收。
+     * - 如果状态为 LISTEN/INIT，w5500_tcp_recv 内部会返回 0，不执行任何操作。
+     * - 如果状态为 ESTABLISHED，正常读取数据。
+     * - 如果对端断开 (CLOSE_WAIT) 或处于 CLOSED 状态，w5500_tcp_recv 会返回 -1。
+     */
     int len = w5500_tcp_recv(net_buf, NET_BUF_SIZE);
+
     if (len > 0)
     {
+      LOG_INFO(TAG_RTOS, "Client connected"); // 提示：连接成功并收到数据
       /* 确保以 '\0' 结尾 */
       if (len < NET_BUF_SIZE) net_buf[len] = '\0';
       else net_buf[NET_BUF_SIZE - 1] = '\0';
@@ -230,26 +223,34 @@ void StartNetTask(void *argument)
     }
     else if (len == -1)
     {
-      LOG("Client disconnected, re-listening");
-      /* 连接断开，重新监听 */
+      LOG_INFO(TAG_RTOS, "Client disconnected, re-listening...");
+      /* 核心修复：执行完整的断开与重新监听流程 */
       w5500_tcp_close();
       w5500_tcp_server_open(W5500_TCP_PORT);
       osDelay(100);
     }
 
     /* ---- 发数据（非阻塞取 SendQueue） ---- */
-    if (osMessageQueueGet(SendQueueHandle, send_buf, NULL, 0) == osOK)
+    /* 仅当处于连接状态时尝试发送，防止无连接时队列积压或无效发送 */
+    if (w5500_tcp_established())
     {
-      /* 如果发送失败（断开），忽略等下次连接 */
-      w5500_tcp_send(send_buf, strlen((const char *)send_buf));
+      if (osMessageQueueGet(SendQueueHandle, send_buf, NULL, 0) == osOK)
+      {
+        w5500_tcp_send(send_buf, strlen((const char *)send_buf));
+      }
+    }
+    else
+    {
+      /* 未连接时，如果发送队列有残留数据，可以视情况清空或忽略 */
+      uint8_t trash[SEND_BUF_SIZE];
+      while (osMessageQueueGet(SendQueueHandle, trash, NULL, 0) == osOK);
     }
 
-    /* 无数据，等一会再查 */
-    osDelay(10);
+    /* 适当延时，防止任务无数据时过度占用 CPU */
+    osDelay(20);
   }
   /* USER CODE END StartNetTask */
 }
-
 /* USER CODE BEGIN Header_StartRouterTask */
 /**
 * @brief 路由任务: 解析 Android App 发来的 JSON 指令
@@ -297,7 +298,7 @@ void StartRouterTask(void *argument)
     /* ======================== 指令路由 ======================== */
 
     /* 串口日志：打印收到的指令 */
-    LOG("RECV: %s", (const char *)net_buf);
+    LOG_INFO(TAG_RTOS, "RECV: %s", (const char *)net_buf);
 
     if (strcmp(command, "servo_set") == 0)
     {
@@ -312,13 +313,13 @@ void StartRouterTask(void *argument)
       if (angle < 0) angle = 0;
       if (angle > 180) angle = 180;
 
-      LOG("servo_set: ch=%d, angle=%d", channel, angle);
+      LOG_INFO(TAG_RTOS, "servo_set: ch=%d, angle=%d", channel, angle);
 
       /* 目前只支持一个舵机，直接塞入 ServoQueue */
       osMessageQueuePut(ServoQueueHandle, &angle, 0, 0);
 
       /* 回响应给 Android App */
-      LOG("Response sent");
+      LOG_INFO(TAG_RTOS, "Response sent");
       snprintf(resp, sizeof(resp),
                "{\"command\":\"servo_set\",\"code\":\"200\",\"cseq\":\"%s\",\"msg\":\"ok\"}"
                MSG_DELIMITER,
@@ -328,7 +329,7 @@ void StartRouterTask(void *argument)
     else if (strcmp(command, "servo_get") == 0)
     {
       /* 查询角度（预留） */
-      LOG("servo_get");
+      LOG_INFO(TAG_RTOS, "servo_get");
       snprintf(resp, sizeof(resp),
                "{\"command\":\"servo_get\",\"code\":\"200\",\"cseq\":\"%s\",\"angle\":90}"
                MSG_DELIMITER,
@@ -338,7 +339,7 @@ void StartRouterTask(void *argument)
     else
     {
       /* 未知指令，回错误 */
-      LOG("Unknown command: %s", command);
+      LOG_INFO(TAG_RTOS, "Unknown command: %s", command);
       snprintf(resp, sizeof(resp),
                "{\"command\":\"%s\",\"code\":\"400\",\"cseq\":\"%s\",\"msg\":\"unknown command\"}"
                MSG_DELIMITER,
@@ -369,7 +370,7 @@ void StartServoTask(void *argument)
     /* 等待角度指令（阻塞） */
     osMessageQueueGet(ServoQueueHandle, &angle, NULL, osWaitForever);
 
-    LOG("ServoTask: angle=%d", angle);
+    LOG_INFO(TAG_RTOS, "ServoTask: angle=%d", angle);
 
     /* 设置舵机角度 */
     servo_set_angle(angle);

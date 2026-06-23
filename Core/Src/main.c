@@ -27,7 +27,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "debug_log.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -137,9 +137,13 @@ int main(void)
   MX_USART1_UART_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-  /* 串口启动测试（FreeRTOS 启动前直接发） */
-  uint8_t boot_msg[] = "AirNode boot OK\r\n";
-  HAL_UART_Transmit(&huart1, boot_msg, sizeof(boot_msg) - 1, 1000);
+  LOG_RAW("\r\n========= AirNode Boot =========\r\n", 35);
+  LOG_INFO(TAG_MAIN,  "MCU: STM32F407ZGT6 @168MHz");
+  LOG_INFO(TAG_W5500, "SPI1(PA5/PA6/PA7) DMA  CS=PA4  RST=PC4  INT=PB0");
+  LOG_INFO(TAG_SERVO, "TIM2_CH1(PA0) PWM 50Hz");
+  LOG_INFO(TAG_UART,  "USART1(PA9/PA10) 115200-8N1");
+  LOG_INFO(TAG_RTOS,  "FreeRTOS CMSIS_V2  Tasks: NetTask|RouterTask|ServoTask");
+  LOG_RAW("================================\r\n\r\n", 35);
   /* USER CODE END 2 */
 
   /* Init scheduler */

@@ -6,15 +6,9 @@
 #include "w5500.h"
 #include "spi.h"
 #include "usart.h"
+#include "debug_log.h"
 #include <string.h>
 #include <stdio.h>
-
-/* 本地日志宏 */
-#define LOG(fmt, ...) do { \
-    char _lb[128]; \
-    int _n = snprintf(_lb, sizeof(_lb), "[W5500] " fmt "\r\n", ##__VA_ARGS__); \
-    if (_n > 0) HAL_UART_Transmit(&huart1, (uint8_t*)_lb, _n, 100); \
-} while(0)
 
 /* ======================== W5500 BSB (区域块选择) ======================= */
 #define W5500_BSB_COMMON          0x00  // 通用寄存器块
@@ -190,12 +184,12 @@ void w5500_init(void)
 
     /* 验证 SPI 通信: 读取版本寄存器 (VERSIONR = 0x0039) */
     uint8_t ver = w5500_read_reg(W5500_BSB_COMMON, VERSIONR);
-    LOG("W5500 version: 0x%02X (expected 0x04)", ver);
+    LOG_INFO(TAG_W5500, "W5500 version: 0x%02X (expected 0x04)", ver);
     if (ver != 0x04) {
-        LOG("SPI communication FAILED!");
+        LOG_INFO(TAG_W5500, "SPI communication FAILED!");
         while (1);
     }
-    LOG("W5500 SPI OK");
+    LOG_INFO(TAG_W5500, "W5500 SPI OK");
 }
 
 /**
@@ -220,9 +214,9 @@ void w5500_network_config(uint8_t *ip, uint8_t *mask, uint8_t *gw)
     /* 回读校验以确认写入成功 */
     w5500_read_buf(W5500_BSB_COMMON, SIPR0, buf, 4);
     if (buf[0] == ip[0] && buf[1] == ip[1] && buf[2] == ip[2] && buf[3] == ip[3]) {
-        LOG("IP verify OK (%d.%d.%d.%d)", buf[0], buf[1], buf[2], buf[3]);
+        LOG_INFO(TAG_W5500, "IP verify OK (%d.%d.%d.%d)", buf[0], buf[1], buf[2], buf[3]);
     } else {
-        LOG("IP MISMATCH! wrote %d.%d.%d.%d but read %d.%d.%d.%d",
+        LOG_INFO(TAG_W5500, "IP MISMATCH! wrote %d.%d.%d.%d but read %d.%d.%d.%d",
             ip[0], ip[1], ip[2], ip[3], buf[0], buf[1], buf[2], buf[3]);
     }
 }
@@ -262,7 +256,7 @@ int w5500_tcp_server_open(uint16_t port)
         return -1;
     }
 
-    LOG("TCP Server listening on port %d...", port);
+    LOG_INFO(TAG_W5500, "TCP Server listening on port %d...", port);
     return 0;
 }
 
@@ -278,15 +272,21 @@ int w5500_tcp_established(void)
 /**
  * @brief 接收数据（非阻塞）
  */
+/**
+ * @brief 接收数据（非阻塞）
+ */
 int w5500_tcp_recv(uint8_t *buf, uint16_t maxlen)
 {
     uint8_t sn = 0;
     uint8_t status = w5500_sock_read_reg(sn, W5500_Sn_SR);
 
-    // 检查连接是否断开
+    // 1. 检查连接是否断开
     if (status == SOCK_CLOSE_WAIT || status == SOCK_CLOSED) {
+        LOG_INFO(TAG_W5500, "Disconnect event detected. Socket state: 0x%02X", status);
         return -1;
     }
+
+    // 未建立连接时直接返回（不打印，防止刷屏）
     if (status != SOCK_ESTABLISHED) {
         return 0;
     }
@@ -295,15 +295,21 @@ int w5500_tcp_recv(uint8_t *buf, uint16_t maxlen)
     uint16_t rx_size = w5500_sock_read_reg(sn, W5500_Sn_RX_RSR0) << 8;
     rx_size |= w5500_sock_read_reg(sn, W5500_Sn_RX_RSR0 + 1);
 
+    // 缓冲区无数据时直接返回（不打印，防止刷屏）
     if (rx_size == 0) return 0;
 
+    // 2. 发现有数据，开始打印调试信息
     uint16_t len = (rx_size < maxlen) ? rx_size : maxlen;
+    LOG_INFO(TAG_W5500, "Data arrived! Total bytes in queue: %d, reading: %d bytes (limit: %d)",
+        rx_size, len, maxlen);
 
     /* 读取当前接收读指针 */
     uint16_t rx_rd = w5500_sock_read_reg(sn, W5500_Sn_RX_RD0) << 8;
     rx_rd |= w5500_sock_read_reg(sn, W5500_Sn_RX_RD0 + 1);
 
-    /* 直接读取接收数据块，W5500内部硬件会自动处理地址的回环映射 */
+    uint16_t old_rd = rx_rd; // 备份旧指针用于日志打印
+
+    /* 直接读取接收数据块 */
     w5500_read_buf(W5500_BSB_S_RX(sn), rx_rd, buf, len);
 
     /* 更新 RX 读指针值 */
@@ -314,9 +320,11 @@ int w5500_tcp_recv(uint8_t *buf, uint16_t maxlen)
     /* 执行 RECV 命令使更新生效 */
     w5500_sock_cmd(sn, CMD_RECV);
 
+    // 3. 打印读指针的变化情况
+    LOG_INFO(TAG_W5500, "RX pointer shifted: 0x%04X -> 0x%04X (CMD_RECV confirmed)", old_rd, rx_rd);
+
     return len;
 }
-
 /**
  * @brief 发送数据
  */
@@ -328,27 +336,25 @@ int w5500_tcp_send(uint8_t *buf, uint16_t len)
         return -1;
     }
 
-    /* 检查发送缓冲区空闲容量 */
+    /* 检查发送缓冲空闲大小 */
     uint16_t free_size = w5500_sock_read_reg(sn, W5500_Sn_TX_FSR0) << 8;
     free_size |= w5500_sock_read_reg(sn, W5500_Sn_TX_FSR0 + 1);
 
-    if (free_size < len) {
-        return 0; // 缓冲区已满
-    }
+    if (free_size < len) return -1;
 
-    /* 读取发送写指针 */
+    /* 读取 Sn_TX_WR 指针 */
     uint16_t tx_wr = w5500_sock_read_reg(sn, W5500_Sn_TX_WR0) << 8;
     tx_wr |= w5500_sock_read_reg(sn, W5500_Sn_TX_WR0 + 1);
 
-    /* 写入发送缓冲区，W5500 会自动处理指针回环映射 */
+    /* 写入发送缓冲区 */
     w5500_write_buf(W5500_BSB_S_TX(sn), tx_wr, buf, len);
 
-    /* 更新写指针值 */
+    /* 更新 Sn_TX_WR */
     tx_wr += len;
     w5500_sock_write_reg(sn, W5500_Sn_TX_WR0, (uint8_t)(tx_wr >> 8));
     w5500_sock_write_reg(sn, W5500_Sn_TX_WR0 + 1, (uint8_t)(tx_wr & 0xFF));
 
-    /* 触发发送命令 */
+    /* SEND 命令 */
     w5500_sock_cmd(sn, CMD_SEND);
 
     return len;
@@ -360,6 +366,6 @@ int w5500_tcp_send(uint8_t *buf, uint16_t len)
 void w5500_tcp_close(void)
 {
     w5500_sock_cmd(0, CMD_DISCON);
-    HAL_Delay(5);
+    HAL_Delay(10);
     w5500_sock_cmd(0, CMD_CLOSE);
 }
