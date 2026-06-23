@@ -361,16 +361,22 @@ void StartServoTask(void *argument)
 {
   /* USER CODE BEGIN StartServoTask */
   int angle;
-
   LOG_INFO(TAG_SERVO, "ServoTask started");
-
   /* 初始化舵机 PWM */
   servo_init();
-  LOG_INFO(TAG_SERVO, "Servo PWM initialized");
-
   for(;;)
   {
     /* 等待角度指令（阻塞） */
-    LOG_DEBUG(TAG_SERVO, "Waiting for angle...");
+    LOG_INFO(TAG_SERVO, "Waiting for angle...");
     osMessageQueueGet(ServoQueueHandle, &angle, NULL, osWaitForever);
-    LOG_INFO(TAG_SERVO, "Got angle: %
+    /* 设置舵机角度 */
+    servo_set_angle(angle);
+    LOG_INFO(TAG_SERVO, "Angle set done: %d", angle);
+  }
+  /* USER CODE END StartServoTask */
+}
+
+/* Private application code --------------------------------------------------*/
+/* USER CODE BEGIN Application */
+
+/* USER CODE END Application */
