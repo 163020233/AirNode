@@ -191,6 +191,15 @@ void StartNetTask(void *argument)
   /* Step 2: 配置网络参数 */
   w5500_network_config(ip, mask, gw);
 
+  /* 打印网络配置 */
+  LOG("W5500 initialized");
+  LOG("IP: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+  LOG("Mask: %d.%d.%d.%d", mask[0], mask[1], mask[2], mask[3]);
+  LOG("GW: %d.%d.%d.%d", gw[0], gw[1], gw[2], gw[3]);
+  uint8_t mac[6] = W5500_MAC_ADDR;
+  LOG("MAC: %02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  LOG("Port: %d", W5500_TCP_PORT);
+
   /* Step 3: 打开 TCP Server */
   while (w5500_tcp_server_open(W5500_TCP_PORT) != 0)
   {
@@ -221,6 +230,7 @@ void StartNetTask(void *argument)
     }
     else if (len == -1)
     {
+      LOG("Client disconnected, re-listening");
       /* 连接断开，重新监听 */
       w5500_tcp_close();
       w5500_tcp_server_open(W5500_TCP_PORT);
@@ -308,6 +318,7 @@ void StartRouterTask(void *argument)
       osMessageQueuePut(ServoQueueHandle, &angle, 0, 0);
 
       /* 回响应给 Android App */
+      LOG("Response sent");
       snprintf(resp, sizeof(resp),
                "{\"command\":\"servo_set\",\"code\":\"200\",\"cseq\":\"%s\",\"msg\":\"ok\"}"
                MSG_DELIMITER,
@@ -317,6 +328,7 @@ void StartRouterTask(void *argument)
     else if (strcmp(command, "servo_get") == 0)
     {
       /* 查询角度（预留） */
+      LOG("servo_get");
       snprintf(resp, sizeof(resp),
                "{\"command\":\"servo_get\",\"code\":\"200\",\"cseq\":\"%s\",\"angle\":90}"
                MSG_DELIMITER,
@@ -326,6 +338,7 @@ void StartRouterTask(void *argument)
     else
     {
       /* 未知指令，回错误 */
+      LOG("Unknown command: %s", command);
       snprintf(resp, sizeof(resp),
                "{\"command\":\"%s\",\"code\":\"400\",\"cseq\":\"%s\",\"msg\":\"unknown command\"}"
                MSG_DELIMITER,
