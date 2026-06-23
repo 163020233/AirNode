@@ -11,7 +11,7 @@ extern "C" {
 #define SERVO_MID_ANGLE    90
 
 /**
- * @brief 初始化舵机 PWM（TIM2_CH1, PA0）
+ * @brief 初始化舵机 PWM（TIM2_CH1, PA15）
  *        需要在 CubeMX 中配置 TIM2: 频率 50Hz (20ms 周期)
  *        定时器时钟 84MHz (APB1), PSC=16800-1, ARR=100-1 → 50Hz
  *        PWM 脉宽: 0°=0.5ms(2.5%), 90°=1.5ms(7.5%), 180°=2.5ms(12.5%)

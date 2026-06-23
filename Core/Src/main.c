@@ -140,7 +140,7 @@ int main(void)
   LOG_RAW("\r\n========= AirNode Boot =========\r\n", 35);
   LOG_INFO(TAG_MAIN,  "MCU: STM32F407ZGT6 @168MHz");
   LOG_INFO(TAG_W5500, "SPI1(PA5/PA6/PA7) DMA  CS=PA4  RST=PC4  INT=PB0");
-  LOG_INFO(TAG_SERVO, "TIM2_CH1(PA0) PWM 50Hz");
+  LOG_INFO(TAG_SERVO, "TIM2_CH1(PA15) PWM 50Hz");
   LOG_INFO(TAG_UART,  "USART1(PA9/PA10) 115200-8N1");
   LOG_INFO(TAG_RTOS,  "FreeRTOS CMSIS_V2  Tasks: NetTask|RouterTask|ServoTask");
   LOG_RAW("================================\r\n\r\n", 35);

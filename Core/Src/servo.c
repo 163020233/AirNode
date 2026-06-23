@@ -1,6 +1,6 @@
 /**
  * @file    servo.c
- * @brief   舵机 PWM 控制 (TIM2_CH1 → PA0)
+ * @brief   舵机 PWM 控制 (TIM2_CH1 → PA15)
  *
  * ===== CubeMX 必须手动配置 (重要!) =====
  * 目前工程里没有 TIM2！你需要打开 AirNode.ioc：
@@ -31,6 +31,7 @@
 #include "servo.h"
 #include "main.h"
 #include "tim.h"
+#include "debug_log.h"
 
 /**
  * @brief 启动 PWM 输出
@@ -39,8 +40,16 @@
  */
 void servo_init(void)
 {
+    LOG_INFO(TAG_SERVO, "servo_init() called");
     /* 启动 TIM2 CH1 PWM 输出 */
-    HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+    if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1) != HAL_OK)
+    {
+        LOG_INFO(TAG_SERVO, "servo_init: PWM Start FAILED!");
+    }
+    else
+    {
+        LOG_INFO(TAG_SERVO, "servo_init: PWM started OK");
+    }
 }
 
 /**

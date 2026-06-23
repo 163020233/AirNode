@@ -6,9 +6,9 @@
 /* ========================= 用户配置区 ======================== */
 
 #define W5500_MAC_ADDR      {0x02, 0x00, 0x00, 0x00, 0x00, 0x01}  // MAC 地址
-#define W5500_IP_ADDR       {192, 168, 1, 20}                     // 本机 IP
+#define W5500_IP_ADDR       {192, 168, 144, 20}                     // 本机 IP
 #define W5500_SUBNET_MASK   {255, 255, 255, 0}                      // 子网掩码
-#define W5500_GATEWAY_ADDR  {192, 168, 1, 1}                      // 网关
+#define W5500_GATEWAY_ADDR  {192, 168, 144, 1}                      // 网关
 #define W5500_TCP_PORT      13550                                    // 监听端口
 
 #define W5500_SPI           &hspi1

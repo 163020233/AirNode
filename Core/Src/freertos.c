@@ -53,27 +53,28 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+/* 手动分配 48KB 堆空间，对齐到 8 字节。CubeMX */
+uint8_t ucHeap[49152] __attribute__((aligned(8))); // 分配 48KB，对 F407 来说毫无压力，且以后极为安全
 /* USER CODE END Variables */
 /* Definitions for NetTask */
 osThreadId_t NetTaskHandle;
 const osThreadAttr_t NetTask_attributes = {
   .name = "NetTask",
-  .stack_size = 1024 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for RouterTask */
 osThreadId_t RouterTaskHandle;
 const osThreadAttr_t RouterTask_attributes = {
   .name = "RouterTask",
-  .stack_size = 1024 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* Definitions for ServoTask */
 osThreadId_t ServoTaskHandle;
 const osThreadAttr_t ServoTask_attributes = {
   .name = "ServoTask",
-  .stack_size = 512 * 4,
+  .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* Definitions for NetQueue */
@@ -142,14 +143,24 @@ void MX_FREERTOS_Init(void) {
 
   /* Create the thread(s) */
   /* creation of NetTask */
-  NetTaskHandle = osThreadNew(StartNetTask, NULL, &NetTask_attributes);
-
-  /* creation of RouterTask */
-  RouterTaskHandle = osThreadNew(StartRouterTask, NULL, &RouterTask_attributes);
-
   /* creation of ServoTask */
-  ServoTaskHandle = osThreadNew(StartServoTask, NULL, &ServoTask_attributes);
+  /* 创建 NetTask */
+  NetTaskHandle = osThreadNew(StartNetTask, NULL, &NetTask_attributes);
+  if (NetTaskHandle == NULL) {
+    LOG_INFO(TAG_RTOS, "ERROR: NetTask creation failed!");
+  }
 
+  /* 创建 RouterTask */
+  RouterTaskHandle = osThreadNew(StartRouterTask, NULL, &RouterTask_attributes);
+  if (RouterTaskHandle == NULL) {
+    LOG_INFO(TAG_RTOS, "ERROR: RouterTask creation failed!");
+  }
+
+  /* 创建 ServoTask */
+  ServoTaskHandle = osThreadNew(StartServoTask, NULL, &ServoTask_attributes);
+  if (ServoTaskHandle == NULL) {
+    LOG_INFO(TAG_RTOS, "ERROR: ServoTask creation failed! (Out of memory)");
+  }
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
@@ -285,65 +296,55 @@ void StartRouterTask(void *argument)
     /* 确保以 '\0' 结尾 */
     net_buf[NET_BUF_SIZE - 1] = '\0';
 
-    /* 提取 "cseq"（如果有，用于回响应时带回） */
+    /* 日志：打印原始数据 */
+    LOG_INFO(TAG_RTOS, "RAW: %s", (const char *)net_buf);
+
+    /* 解析 "cseq" */
     cseq[0] = '\0';
     json_get_string((const char *)net_buf, "cseq", cseq, sizeof(cseq));
 
-    /* 解析 "command" 字段 */
+    /* 解析 "command" */
+    command[0] = '\0';
     if (json_get_string((const char *)net_buf, "command", command, sizeof(command)) != 0)
     {
-      continue;  /* 没有 command 字段，丢弃 */
+      LOG_INFO(TAG_RTOS, "No command found, skip");
+      continue;
     }
+
+    LOG_INFO(TAG_RTOS, "Command: %s", command);
 
     /* ======================== 指令路由 ======================== */
 
-    /* 串口日志：打印收到的指令 */
-    LOG_INFO(TAG_RTOS, "RECV: %s", (const char *)net_buf);
-
     if (strcmp(command, "servo_set") == 0)
     {
-      /* 舵机控制: {"command":"servo_set","ch":0,"angle":90} */
-      channel = 0;
-      angle = 90;
-
+      channel = 0; angle = 90;
       json_get_int((const char *)net_buf, "ch", &channel);
       json_get_int((const char *)net_buf, "angle", &angle);
-
-      /* 限幅 */
       if (angle < 0) angle = 0;
       if (angle > 180) angle = 180;
-
       LOG_INFO(TAG_RTOS, "servo_set: ch=%d, angle=%d", channel, angle);
-
-      /* 目前只支持一个舵机，直接塞入 ServoQueue */
       osMessageQueuePut(ServoQueueHandle, &angle, 0, 0);
 
-      /* 回响应给 Android App */
       LOG_INFO(TAG_RTOS, "Response sent");
       snprintf(resp, sizeof(resp),
                "{\"command\":\"servo_set\",\"code\":\"200\",\"cseq\":\"%s\",\"msg\":\"ok\"}"
-               MSG_DELIMITER,
-               cseq);
+               MSG_DELIMITER, cseq);
       osMessageQueuePut(SendQueueHandle, resp, 0, 0);
     }
     else if (strcmp(command, "servo_get") == 0)
     {
-      /* 查询角度（预留） */
       LOG_INFO(TAG_RTOS, "servo_get");
       snprintf(resp, sizeof(resp),
                "{\"command\":\"servo_get\",\"code\":\"200\",\"cseq\":\"%s\",\"angle\":90}"
-               MSG_DELIMITER,
-               cseq);
+               MSG_DELIMITER, cseq);
       osMessageQueuePut(SendQueueHandle, resp, 0, 0);
     }
     else
     {
-      /* 未知指令，回错误 */
-      LOG_INFO(TAG_RTOS, "Unknown command: %s", command);
+      LOG_INFO(TAG_RTOS, "Unknown: %s", command);
       snprintf(resp, sizeof(resp),
-               "{\"command\":\"%s\",\"code\":\"400\",\"cseq\":\"%s\",\"msg\":\"unknown command\"}"
-               MSG_DELIMITER,
-               command, cseq);
+               "{\"command\":\"%s\",\"code\":\"400\",\"cseq\":\"%s\",\"msg\":\"unknown\"}"
+               MSG_DELIMITER, command, cseq);
       osMessageQueuePut(SendQueueHandle, resp, 0, 0);
     }
   }
@@ -362,18 +363,22 @@ void StartServoTask(void *argument)
   /* USER CODE BEGIN StartServoTask */
   int angle;
 
+  LOG_INFO(TAG_SERVO, "ServoTask started");
+
   /* 初始化舵机 PWM */
   servo_init();
+  LOG_INFO(TAG_SERVO, "Servo PWM initialized");
 
   for(;;)
   {
     /* 等待角度指令（阻塞） */
+    LOG_INFO(TAG_SERVO, "Waiting for angle...");
     osMessageQueueGet(ServoQueueHandle, &angle, NULL, osWaitForever);
-
-    LOG_INFO(TAG_RTOS, "ServoTask: angle=%d", angle);
+    LOG_INFO(TAG_SERVO, "Got angle: %d", angle);
 
     /* 设置舵机角度 */
     servo_set_angle(angle);
+    LOG_INFO(TAG_SERVO, "Angle set done: %d", angle);
   }
   /* USER CODE END StartServoTask */
 }
