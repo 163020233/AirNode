@@ -36,6 +36,7 @@ set(MX_Application_Src
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/w5500.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/simple_json.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/servo.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Core/Src/flash_storage.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../startup_stm32f407xx.s
 )
 

@@ -307,8 +307,6 @@ int w5500_tcp_recv(uint8_t *buf, uint16_t maxlen)
     uint16_t rx_rd = w5500_sock_read_reg(sn, W5500_Sn_RX_RD0) << 8;
     rx_rd |= w5500_sock_read_reg(sn, W5500_Sn_RX_RD0 + 1);
 
-    uint16_t old_rd = rx_rd; // 备份旧指针用于日志打印
-
     /* 直接读取接收数据块 */
     w5500_read_buf(W5500_BSB_S_RX(sn), rx_rd, buf, len);
 
@@ -319,9 +317,6 @@ int w5500_tcp_recv(uint8_t *buf, uint16_t maxlen)
 
     /* 执行 RECV 命令使更新生效 */
     w5500_sock_cmd(sn, CMD_RECV);
-
-    // // 3. 打印读指针的变化情况
-    // LOG_INFO(TAG_W5500, "RX pointer shifted: 0x%04X -> 0x%04X (CMD_RECV confirmed)", old_rd, rx_rd);
 
     return len;
 }

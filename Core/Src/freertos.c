@@ -4,16 +4,6 @@
   * File Name          : freertos.c
   * Description        : Code for freertos applications
   ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
   */
 /* USER CODE END Header */
 
@@ -29,9 +19,12 @@
 #include "servo.h"
 #include "simple_json.h"
 #include "debug_log.h"
+#include "flash_storage.h"
+#include "tim.h"
 #include "usart.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -53,9 +46,10 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-/* 手动分配 48KB 堆空间，对齐到 8 字节。CubeMX */
-uint8_t ucHeap[49152] __attribute__((aligned(8))); // 分配 48KB，对 F407 来说毫无压力，且以后极为安全
+/* 手动分配 48KB 堆空间，对齐到 8 字节 */
+uint8_t ucHeap[49152] __attribute__((aligned(8)));
 /* USER CODE END Variables */
+
 /* Definitions for NetTask */
 osThreadId_t NetTaskHandle;
 const osThreadAttr_t NetTask_attributes = {
@@ -76,6 +70,13 @@ const osThreadAttr_t ServoTask_attributes = {
   .name = "ServoTask",
   .stack_size = 256 * 4,
   .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for SerialTask */
+osThreadId_t SerialTaskHandle;
+const osThreadAttr_t SerialTask_attributes = {
+  .name = "SerialTask",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* Definitions for NetQueue */
 osMessageQueueId_t NetQueueHandle;
@@ -98,12 +99,28 @@ const osMessageQueueAttr_t SendQueue_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
+static int safe_json_get_int(const char *json, const char *key, int *val);
+/* USER CODE BEGIN FunctionPrototypes */
+static int safe_json_get_int(const char *json, const char *key, int *val);
 
+/**
+ * @brief 统一发送应答函数 (同时回复网口 TCP 和 串口 UART)
+ */
+static void send_response(const char *msg)
+{
+  // 1. 发送给网络任务 (回传给 Android App)
+  osMessageQueuePut(SendQueueHandle, msg, 0, 0);
+
+  // 2. 同步发送回串口 (回传给 Python 配置工具)
+  HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+}
+/* USER CODE END FunctionPrototypes */
 /* USER CODE END FunctionPrototypes */
 
 void StartNetTask(void *argument);
 void StartRouterTask(void *argument);
 void StartServoTask(void *argument);
+void StartSerialTask(void *argument);
 
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
@@ -113,73 +130,63 @@ void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
   * @retval None
   */
 void MX_FREERTOS_Init(void) {
-  /* USER CODE BEGIN Init */
-
-  /* USER CODE END Init */
-
-  /* USER CODE BEGIN RTOS_MUTEX */
-  /* add mutexes, ... */
-  /* USER CODE END RTOS_MUTEX */
-
-  /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* add semaphores, ... */
-  /* USER CODE END RTOS_SEMAPHORES */
-
-  /* USER CODE BEGIN RTOS_TIMERS */
-  /* start timers, add new ones, ... */
-  /* USER CODE END RTOS_TIMERS */
-
   /* Create the queue(s) */
-  /* creation of NetQueue */
-  NetQueueHandle = osMessageQueueNew (16, 64, &NetQueue_attributes);
-
-  /* creation of ServoQueue */
+  NetQueueHandle = osMessageQueueNew (16, 128, &NetQueue_attributes);
   ServoQueueHandle = osMessageQueueNew (8, 16, &ServoQueue_attributes);
-
-  /* USER CODE BEGIN RTOS_QUEUES */
-  /* creation of SendQueue */
   SendQueueHandle = osMessageQueueNew (8, SEND_BUF_SIZE, &SendQueue_attributes);
-  /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* creation of NetTask */
-  /* creation of ServoTask */
-  /* 创建 NetTask */
   NetTaskHandle = osThreadNew(StartNetTask, NULL, &NetTask_attributes);
   if (NetTaskHandle == NULL) {
     LOG_INFO(TAG_RTOS, "ERROR: NetTask creation failed!");
   }
 
-  /* 创建 RouterTask */
   RouterTaskHandle = osThreadNew(StartRouterTask, NULL, &RouterTask_attributes);
   if (RouterTaskHandle == NULL) {
     LOG_INFO(TAG_RTOS, "ERROR: RouterTask creation failed!");
   }
 
-  /* 创建 ServoTask */
   ServoTaskHandle = osThreadNew(StartServoTask, NULL, &ServoTask_attributes);
   if (ServoTaskHandle == NULL) {
     LOG_INFO(TAG_RTOS, "ERROR: ServoTask creation failed! (Out of memory)");
   }
-  /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
-  /* USER CODE END RTOS_THREADS */
 
-  /* USER CODE BEGIN RTOS_EVENTS */
-  /* add events, ... */
-  /* USER CODE END RTOS_EVENTS */
+  SerialTaskHandle = osThreadNew(StartSerialTask, NULL, &SerialTask_attributes);
+  if (SerialTaskHandle == NULL) {
+    LOG_INFO(TAG_RTOS, "ERROR: SerialTask creation failed!");
+  }
+}
 
+/* ======================== 内部安全解析函数 ======================== */
+/**
+ * @brief 安全提取 JSON 字符串中的整型数值 (完全独立，避开 simple_json 库缺陷)
+ */
+static int safe_json_get_int(const char *json, const char *key, int *val)
+{
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+
+    // 精确检索带有双引号包裹的键名，例如 "closed":
+    char *p = strstr(json, pattern);
+    if (!p) {
+        // 兼容没有引号的格式
+        snprintf(pattern, sizeof(pattern), "%s:", key);
+        p = strstr(json, pattern);
+    }
+
+    if (p) {
+        p += strlen(pattern);
+        // 跳过可能存在的空格或双引号
+        while (*p == ' ' || *p == '"' || *p == ':') {
+            p++;
+        }
+        *val = atoi(p);
+        return 0; // 成功匹配并解析
+    }
+    return -1; // 未找到该键名
 }
 
 /* USER CODE BEGIN Header_StartNetTask */
-/**
-  * @brief  网络任务: 初始化 W5500 → 开 TCP Server → 循环收发
-  *         收: 从 W5500 recv → 入 NetQueue
-  *         发: 从 SendQueue 取 → 发回 W5500
-  * @param  argument: Not used
-  * @retval None
-  */
-/* USER CODE END Header_StartNetTask */
 void StartNetTask(void *argument)
 {
   /* USER CODE BEGIN StartNetTask */
@@ -190,13 +197,9 @@ void StartNetTask(void *argument)
   uint8_t net_buf[NET_BUF_SIZE];
   uint8_t send_buf[SEND_BUF_SIZE];
 
-  /* Step 1: 初始化 W5500 */
   w5500_init();
-
-  /* Step 2: 配置网络参数 */
   w5500_network_config(ip, mask, gw);
 
-  /* 打印网络配置 */
   LOG_INFO(TAG_RTOS, "W5500 initialized");
   LOG_INFO(TAG_RTOS, "IP: %d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
   LOG_INFO(TAG_RTOS, "Mask: %d.%d.%d.%d", mask[0], mask[1], mask[2], mask[3]);
@@ -205,43 +208,29 @@ void StartNetTask(void *argument)
   LOG_INFO(TAG_RTOS, "MAC: %02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   LOG_INFO(TAG_RTOS, "Port: %d", W5500_TCP_PORT);
 
-  /* Step 3: 打开 TCP Server */
   while (w5500_tcp_server_open(W5500_TCP_PORT) != 0)
   {
     osDelay(1000);
   }
 
-  /* Step 4: 收发循环 */
   for(;;)
   {
-    /*
-     * 直接尝试接收。
-     * - 如果状态为 LISTEN/INIT，w5500_tcp_recv 内部会返回 0，不执行任何操作。
-     * - 如果状态为 ESTABLISHED，正常读取数据。
-     * - 如果对端断开 (CLOSE_WAIT) 或处于 CLOSED 状态，w5500_tcp_recv 会返回 -1。
-     */
     int len = w5500_tcp_recv(net_buf, NET_BUF_SIZE);
 
     if (len > 0)
     {
-      /* 确保以 '\0' 结尾 */
       if (len < NET_BUF_SIZE) net_buf[len] = '\0';
       else net_buf[NET_BUF_SIZE - 1] = '\0';
-
-      /* 塞入 NetQueue，交给 RouterTask 处理 */
       osMessageQueuePut(NetQueueHandle, net_buf, 0, 0);
     }
     else if (len == -1)
     {
       LOG_DEBUG(TAG_RTOS, "Client disconnected, re-listening...");
-      /* 核心修复：执行完整的断开与重新监听流程 */
       w5500_tcp_close();
       w5500_tcp_server_open(W5500_TCP_PORT);
       osDelay(100);
     }
 
-    /* ---- 发数据（非阻塞取 SendQueue） ---- */
-    /* 仅当处于连接状态时尝试发送，防止无连接时队列积压或无效发送 */
     if (w5500_tcp_established())
     {
       if (osMessageQueueGet(SendQueueHandle, send_buf, NULL, 0) == osOK)
@@ -251,32 +240,16 @@ void StartNetTask(void *argument)
     }
     else
     {
-      /* 未连接时，如果发送队列有残留数据，可以视情况清空或忽略 */
       uint8_t trash[SEND_BUF_SIZE];
       while (osMessageQueueGet(SendQueueHandle, trash, NULL, 0) == osOK);
     }
 
-    /* 适当延时，防止任务无数据时过度占用 CPU */
     osDelay(20);
   }
   /* USER CODE END StartNetTask */
 }
+
 /* USER CODE BEGIN Header_StartRouterTask */
-/**
-* @brief 路由任务: 解析 Android App 发来的 JSON 指令
-*
-* Android 协议格式:
-*   {"command":"servo_set","cseq":"1","ch":0,"angle":90}
-*   以 \r\n\r\n 分隔（已由 NetTask 截断）
-*
-* 响应格式:
-*   {"command":"servo_set","code":"200","cseq":"1","msg":"ok"}
-*   通过 SendQueue 发回
-*
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartRouterTask */
 void StartRouterTask(void *argument)
 {
   /* USER CODE BEGIN StartRouterTask */
@@ -289,20 +262,14 @@ void StartRouterTask(void *argument)
 
   for(;;)
   {
-    /* 从 NetQueue 取一条网络数据（阻塞等待） */
     osMessageQueueGet(NetQueueHandle, net_buf, NULL, osWaitForever);
-
-    /* 确保以 '\0' 结尾 */
     net_buf[NET_BUF_SIZE - 1] = '\0';
 
-    /* 日志：打印原始数据 */
     LOG_INFO(TAG_RTOS, "RAW: %s", (const char *)net_buf);
 
-    /* 解析 "cseq" */
     cseq[0] = '\0';
     json_get_string((const char *)net_buf, "cseq", cseq, sizeof(cseq));
 
-    /* 解析 "command" */
     command[0] = '\0';
     if (json_get_string((const char *)net_buf, "command", command, sizeof(command)) != 0)
     {
@@ -314,11 +281,90 @@ void StartRouterTask(void *argument)
 
     /* ======================== 指令路由 ======================== */
 
-    if (strcmp(command, "servo_set") == 0)
+    /* ---- Flash 配置读取 ---- */
+    if (strcmp(command, "config_read") == 0)
+    {
+      int ch = 0;
+      safe_json_get_int((const char *)net_buf, "ch", &ch);
+
+      if (ch >= 0 && ch < FLASH_CHANNEL_COUNT) {
+        const FlashChannelConfig *cfg = flash_get_config((uint8_t)ch);
+        LOG_INFO(TAG_SYSTEM, "config_read: ch=%d", ch);
+        snprintf(resp, sizeof(resp),
+                 "{\"command\":\"config_read_response\",\"code\":\"200\",\"cseq\":\"%s\","
+                 "\"ch\":%d,\"closed\":%d,\"released\":%d}"
+                 MSG_DELIMITER,
+                 cseq, ch, cfg->closed_pwm, cfg->released_pwm);
+      } else {
+        snprintf(resp, sizeof(resp),
+                 "{\"command\":\"config_read_response\",\"code\":\"400\",\"cseq\":\"%s\",\"msg\":\"bad ch\"}"
+                 MSG_DELIMITER, cseq);
+      }
+      send_response(resp); // 核心修复：使用统一应答
+    }
+    /* ---- Flash 配置写入 ---- */
+    else if (strcmp(command, "config_write") == 0)
+    {
+      int ch = 0;
+      int closed = 0;
+      int released = 0;
+
+      safe_json_get_int((const char *)net_buf, "ch", &ch);
+      safe_json_get_int((const char *)net_buf, "closed", &closed);
+      safe_json_get_int((const char *)net_buf, "released", &released);
+
+      LOG_INFO(TAG_SYSTEM, "Parsed Config Write - CH%d: closed=%d, released=%d", ch, closed, released);
+
+      if (ch >= 0 && ch < FLASH_CHANNEL_COUNT) {
+        if (flash_set_config((uint8_t)ch, (uint16_t)closed, (uint16_t)released) == 0) {
+          snprintf(resp, sizeof(resp),
+                   "{\"command\":\"config_write\",\"code\":\"200\",\"ch\":%d,\"cseq\":\"%s\",\"msg\":\"saved\"}"
+                   MSG_DELIMITER, ch, cseq);
+        } else {
+          snprintf(resp, sizeof(resp),
+                   "{\"command\":\"config_write\",\"code\":\"500\",\"ch\":%d,\"cseq\":\"%s\",\"msg\":\"flash error\"}"
+                   MSG_DELIMITER, ch, cseq);
+        }
+      } else {
+        snprintf(resp, sizeof(resp),
+                 "{\"command\":\"config_write\",\"code\":\"400\",\"ch\":%d,\"cseq\":\"%s\",\"msg\":\"bad ch\"}"
+                 MSG_DELIMITER, ch, cseq);
+      }
+      send_response(resp); // 核心修复：使用统一应答
+    }
+    /* ---- 抛投触发 ---- */
+    else if (strcmp(command, "servo_trigger") == 0)
+    {
+      int ch = 0;
+      char action[16] = "close";
+      safe_json_get_int((const char *)net_buf, "ch", &ch);
+      json_get_string((const char *)net_buf, "action", action, sizeof(action));
+
+      if (ch >= 0 && ch < FLASH_CHANNEL_COUNT) {
+        const FlashChannelConfig *cfg = flash_get_config((uint8_t)ch);
+        int target_pwm = cfg->closed_pwm;
+        if (strcmp(action, "release") == 0) target_pwm = cfg->released_pwm;
+
+        LOG_INFO(TAG_SYSTEM, "trigger: ch=%d, action=%s, pwm=%d", ch, action, target_pwm);
+
+        /* 直接设置 PWM，使用统一驱动接口 */
+        servo_set_pwm_us((uint8_t)ch, (uint16_t)target_pwm);
+
+        snprintf(resp, sizeof(resp),
+                 "{\"command\":\"servo_trigger\",\"code\":\"200\",\"ch\":%d,\"action\":\"%s\",\"cseq\":\"%s\",\"msg\":\"ok\"}"
+                 MSG_DELIMITER, ch, action, cseq);
+      } else {
+        snprintf(resp, sizeof(resp),
+                 "{\"command\":\"servo_trigger\",\"code\":\"400\",\"ch\":%d,\"cseq\":\"%s\",\"msg\":\"bad ch\"}"
+                 MSG_DELIMITER, ch, cseq);
+      }
+      send_response(resp); // 核心修复：使用统一应答
+    }
+    else if (strcmp(command, "servo_set") == 0)
     {
       channel = 0; angle = 90;
-      json_get_int((const char *)net_buf, "ch", &channel);
-      json_get_int((const char *)net_buf, "angle", &angle);
+      safe_json_get_int((const char *)net_buf, "ch", &channel);
+      safe_json_get_int((const char *)net_buf, "angle", &angle);
       if (angle < 0) angle = 0;
       if (angle > 180) angle = 180;
       LOG_INFO(TAG_RTOS, "servo_set: ch=%d, angle=%d", channel, angle);
@@ -328,7 +374,7 @@ void StartRouterTask(void *argument)
       snprintf(resp, sizeof(resp),
                "{\"command\":\"servo_set\",\"code\":\"200\",\"cseq\":\"%s\",\"msg\":\"ok\"}"
                MSG_DELIMITER, cseq);
-      osMessageQueuePut(SendQueueHandle, resp, 0, 0);
+      send_response(resp); // 核心修复：使用统一应答
     }
     else if (strcmp(command, "servo_get") == 0)
     {
@@ -336,7 +382,7 @@ void StartRouterTask(void *argument)
       snprintf(resp, sizeof(resp),
                "{\"command\":\"servo_get\",\"code\":\"200\",\"cseq\":\"%s\",\"angle\":90}"
                MSG_DELIMITER, cseq);
-      osMessageQueuePut(SendQueueHandle, resp, 0, 0);
+      send_response(resp); // 核心修复：使用统一应答
     }
     else
     {
@@ -344,39 +390,69 @@ void StartRouterTask(void *argument)
       snprintf(resp, sizeof(resp),
                "{\"command\":\"%s\",\"code\":\"400\",\"cseq\":\"%s\",\"msg\":\"unknown\"}"
                MSG_DELIMITER, command, cseq);
-      osMessageQueuePut(SendQueueHandle, resp, 0, 0);
+      send_response(resp); // 核心修复：使用统一应答
     }
   }
   /* USER CODE END StartRouterTask */
 }
-
 /* USER CODE BEGIN Header_StartServoTask */
-/**
-* @brief 舵机任务: 从 ServoQueue 取角度值 → 输出 PWM 控制舵机
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartServoTask */
 void StartServoTask(void *argument)
 {
   /* USER CODE BEGIN StartServoTask */
   int angle;
   LOG_INFO(TAG_SERVO, "ServoTask started");
-  /* 初始化舵机 PWM */
   servo_init();
   for(;;)
   {
-    /* 等待角度指令（阻塞） */
     LOG_INFO(TAG_SERVO, "Waiting for angle...");
     osMessageQueueGet(ServoQueueHandle, &angle, NULL, osWaitForever);
-    /* 设置舵机角度 */
     servo_set_angle(angle);
     LOG_INFO(TAG_SERVO, "Angle set done: %d", angle);
   }
   /* USER CODE END StartServoTask */
 }
 
-/* Private application code --------------------------------------------------*/
+/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN Application */
+void StartSerialTask(void *argument)
+{
+  /* USER CODE BEGIN StartSerialTask */
+  uint8_t uart_buf[512];
+  uint16_t uart_len = 0;
 
+  for (;;)
+  {
+    uint8_t ch;
+    // 将超时时间调整为 5ms (原先是 10ms)，提升系统整体的调度性能
+    if (HAL_UART_Receive(&huart1, &ch, 1, 5) == HAL_OK)
+    {
+      if (uart_len < sizeof(uart_buf) - 1)
+      {
+        uart_buf[uart_len++] = ch;
+        if (uart_len >= 4 &&
+            uart_buf[uart_len - 4] == '\r' &&
+            uart_buf[uart_len - 3] == '\n' &&
+            uart_buf[uart_len - 2] == '\r' &&
+            uart_buf[uart_len - 1] == '\n')
+        {
+          uart_buf[uart_len] = '\0';
+          LOG_DEBUG(TAG_RTOS, "Serial recv: %s", (char *)uart_buf);
+          osMessageQueuePut(NetQueueHandle, uart_buf, 0, 0);
+          uart_len = 0;
+        }
+      }
+      else
+      {
+        uart_len = 0;
+      }
+    }
+    else
+    {
+      /* 核心修复：当串口没有收到数据（HAL_TIMEOUT）时，必须释放 CPU 并延时 5ms */
+      /* 这样 RTOS 调度器才能在空闲时，把执行权交还给低优先级的 ServoTask 去初始化定时器 */
+      osDelay(5);
+    }
+  }
+  /* USER CODE END StartSerialTask */
+}
 /* USER CODE END Application */

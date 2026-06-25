@@ -1,34 +1,23 @@
-#ifndef __SERVO_H__
-#define __SERVO_H__
+#ifndef __SERVO_H
+#define __SERVO_H
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* 舵机角度范围（SG90 / MG996R 标准） */
-#define SERVO_MIN_ANGLE    0
-#define SERVO_MAX_ANGLE    180
-#define SERVO_MID_ANGLE    90
+#include "main.h"
 
-/**
- * @brief 初始化舵机 PWM（TIM2_CH1, PA15）
- *        需要在 CubeMX 中配置 TIM2: 频率 50Hz (20ms 周期)
- *        定时器时钟 84MHz (APB1), PSC=16800-1, ARR=100-1 → 50Hz
- *        PWM 脉宽: 0°=0.5ms(2.5%), 90°=1.5ms(7.5%), 180°=2.5ms(12.5%)
- *        对应 CCR 值: 0°=2.5, 90°=7.5, 180°=12.5
- */
+#define SERVO_MIN_ANGLE   0
+#define SERVO_MAX_ANGLE   180
+
 void servo_init(void);
-
-/**
- * @brief 设置舵机角度（0~180°）
- *
- * @param angle 角度值，范围 0-180
- *              会自动限幅
- */
 void servo_set_angle(int angle);
+
+/* 新增：通过微秒脉宽设置指定通道 PWM 的 API 声明 */
+void servo_set_pwm_us(uint8_t ch, uint16_t pwm_us);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif
+#endif /* __SERVO_H */

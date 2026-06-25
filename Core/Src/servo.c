@@ -1,31 +1,6 @@
 /**
- * @file    servo.c
- * @brief   舵机 PWM 控制 (TIM2_CH1 → PA15)
- *
- * ===== CubeMX 必须手动配置 (重要!) =====
- * 目前工程里没有 TIM2！你需要打开 AirNode.ioc：
- *   1. Pinout → Timers → TIM2
- *      - Channel1 → "PWM Generation CH1"
- *   2. Configuration → TIM2 → Parameter Settings:
- *      - Prescaler (PSC): 1680-1
- *      - Counter Mode: Up
- *      - Counter Period (ARR): 1000-1
- *      - Auto-reload preload: Enable
- *      - CH1 Pulse(CCR): 75 (初始90°)
- *   3. Pinout 界面 PA0 会自动变成 TIM2_CH1
- *   4. 点 GENERATE CODE 重新生成
- *   5. 工程里会多出 tim.c / tim.h，里面有 MX_TIM2_Init()
- *   6. 在 main.c 的 MX_USART1_UART_Init() 后面加上 MX_TIM2_Init()
- *
- * ===== 定时器计算 =====
- *   APB1 = 84MHz
- *   PSC=1679 (1680-1) → 84MHz/1680 = 50kHz
- *   ARR=999 (1000-1)  → 50kHz/1000 = 50Hz (周期20ms)
- *
- *   PWM 占空比（CCR 值）:
- *     0°   = 0.5ms  = 0.5ms×50kHz = 25  ticks
- *     90°  = 1.5ms  = 1.5ms×50kHz = 75  ticks
- *     180° = 2.5ms  = 2.5ms×50kHz = 125 ticks
+* @file    servo.c
+ * @brief   舵机 PWM 控制 (F407: TIM2_CH1 → 通道 0, TIM2_CH2 → 通道 1)
  */
 
 #include "servo.h"
@@ -33,34 +8,38 @@
 #include "tim.h"
 #include "debug_log.h"
 
+extern TIM_HandleTypeDef htim2; // 声明引用 TIM2 句柄
+
 /**
- * @brief 启动 PWM 输出
- *
- * 注意! 必须先 MX_TIM2_Init() 初始化定时器
+ * @brief 启动双通道 PWM 输出
  */
 void servo_init(void)
 {
     LOG_INFO(TAG_SERVO, "servo_init() called");
-    /* 启动 TIM2 CH1 PWM 输出 */
+
+    /* 启动 TIM2 CH1 (对应通道 0) PWM 输出 */
     if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1) != HAL_OK)
     {
-        LOG_INFO(TAG_SERVO, "servo_init: PWM Start FAILED!");
+        LOG_ERROR(TAG_SERVO, "servo_init: CH1 PWM Start FAILED!");
     }
     else
     {
-        LOG_INFO(TAG_SERVO, "servo_init: PWM started OK");
+        LOG_INFO(TAG_SERVO, "servo_init: CH1 PWM started OK");
+    }
+
+    /* 启动 TIM2 CH2 (对应通道 1) PWM 输出 */
+    if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2) != HAL_OK)
+    {
+        LOG_ERROR(TAG_SERVO, "servo_init: CH2 PWM Start FAILED!");
+    }
+    else
+    {
+        LOG_INFO(TAG_SERVO, "servo_init: CH2 PWM started OK");
     }
 }
 
 /**
- * @brief 设置舵机角度 (0° ~ 180°)
- *
- * 内部映射公式:
- *   角度 0 → CCR 25
- *   角度 90 → CCR 75
- *   角度 180 → CCR 125
- *
- * 用整数计算避免浮点，运行更快
+ * @brief 设置舵机角度 (0° ~ 180°)，用于通道 0 传统控制
  */
 void servo_set_angle(int angle)
 {
@@ -72,4 +51,32 @@ void servo_set_angle(int angle)
     uint32_t ccr = 25 + (uint32_t)angle * 100 / 180;
 
     __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, ccr);
+}
+
+/**
+ * @brief 通过原始微秒 (us) 脉宽设置指定通道的 PWM (500us ~ 2500us)
+ * @param ch 通道号 (0 代表 CH1, 1 代表 CH2)
+ * @param pwm_us 微秒值 (1000~2000，例如 1500)
+ */
+void servo_set_pwm_us(uint8_t ch, uint16_t pwm_us)
+{
+    /* 标准舵机脉宽安全保护限制 */
+    if (pwm_us < 500)  pwm_us = 500;
+    if (pwm_us > 2500) pwm_us = 2500;
+
+    /* 计算定时器 CCR 值 (50kHz 频率下，1 tick = 20微秒) */
+    uint32_t ccr = (uint32_t)pwm_us / 20;
+
+    if (ch == 0)
+    {
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, ccr);
+        // 修复：显式强转为 (int)，消除编译器 -Wformat 警告
+        LOG_DEBUG(TAG_SERVO, "CH0 PWM set to %d us (CCR=%d)", (int)pwm_us, (int)ccr);
+    }
+    else if (ch == 1)
+    {
+        __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, ccr);
+        // 修复：显式强转为 (int)，消除编译器 -Wformat 警告
+        LOG_DEBUG(TAG_SERVO, "CH1 PWM set to %d us (CCR=%d)", (int)pwm_us, (int)ccr);
+    }
 }

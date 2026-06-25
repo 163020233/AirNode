@@ -28,6 +28,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "debug_log.h"
+#include "flash_storage.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -137,6 +138,9 @@ int main(void)
   MX_USART1_UART_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+  /* 加载 Flash 配置 */
+  flash_load_defaults();
+
   LOG_RAW("\r\n========= AirNode Boot =========\r\n", 35);
   LOG_INFO(TAG_MAIN,  "MCU: STM32F407ZGT6 @168MHz");
   LOG_INFO(TAG_W5500, "SPI1(PA5/PA6/PA7) DMA  CS=PA4  RST=PC4  INT=PB0");
