@@ -1,13 +1,7 @@
 #!/usr/bin/env python3
 """
-AirNode 抛投器配置工具 (上位机 - 调试增强版)
-通过串口连接 STM32，读写抛投器通道的 PWM 参数。
-
-协议: JSON over USART1 (115200-8N1)
-  读取配置:  {"command":"config_read","cseq":"1"}
-  写入配置:  {"command":"config_write","cseq":"1","ch0_closed":1200,"ch0_released":2000,"ch1_closed":1000,"ch1_released":1800}
-  触发动作:  {"command":"servo_trigger","cseq":"1","ch":0,"action":"release"}
-  查询状态:  {"command":"servo_query","cseq":"1","ch":0}
+AirNode 抛投器配置工具 (上位机 - 极速 CSV 桥接版)
+通过串口发送极简文本指令，在底层与单片机进行极速、免丢包的通信。
 """
 
 import tkinter as tk
@@ -25,11 +19,9 @@ BAUDRATE = 115200
 TIMEOUT = 1.0
 MSG_DELIMITER = b"\r\n\r\n"
 
+
 # ============================================================
-#  串口通信线程
-# ============================================================
-# ============================================================
-#  串口通信线程 (日志过滤与 JSON 提取增强版)
+#  串口通信线程 (日志过滤与 CSV 应答协议桥接器)
 # ============================================================
 class Stm32Serial:
     def __init__(self, callback):
@@ -46,6 +38,9 @@ class Stm32Serial:
     def connect(self, port):
         try:
             self.ser = serial.Serial(port, BAUDRATE, timeout=TIMEOUT)
+            self.ser.reset_input_buffer()
+            self.ser.reset_output_buffer()
+
             self.running = True
             self.recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
             self.recv_thread.start()
@@ -56,6 +51,8 @@ class Stm32Serial:
             return False
 
     def disconnect(self):
+        if self.ser is None and not self.running:
+            return
         self.running = False
         if self.ser:
             try:
@@ -75,14 +72,11 @@ class Stm32Serial:
             self.disconnect()
             return False
 
-    def send_json(self, cmd):
+    # 发送极简 CSV 文本
+    def send_csv(self, cmd_str):
         self.cseq += 1
-        payload = {"command": cmd["command"], "cseq": str(self.cseq)}
-        for k, v in cmd.items():
-            if k != "command":
-                payload[k] = v
-        raw = json.dumps(payload).encode("utf-8")
-        print(f"[PC Debug] 发送数据 -> {payload}")
+        raw = cmd_str.encode("utf-8")
+        print(f"[PC Debug] 发送 CSV 指令 -> {cmd_str}")
         return self.send(raw)
 
     def _recv_loop(self):
@@ -92,6 +86,10 @@ class Stm32Serial:
                     data = self.ser.read(256)
                     if data:
                         self.buffer += data
+                        if len(self.buffer) > 4096:
+                            self.buffer = b""
+                            continue
+
                         while True:
                             idx = self.buffer.find(MSG_DELIMITER)
                             if idx == -1:
@@ -102,31 +100,49 @@ class Stm32Serial:
                                 pkt_str = pkt.decode("utf-8", errors="ignore").strip()
                                 if not pkt_str:
                                     continue
-                                
-                                # 核心修复：寻找有效的 JSON 界定符 {}
+
                                 start_idx = pkt_str.find("{")
                                 end_idx = pkt_str.rfind("}")
-                                
+
+                                # A. 如果包含 {}，依然按照标准 JSON 解析 (向下兼容)
                                 if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                                    # 1. 如果混合包中含有系统日志，先将日志剥离并输出
-                                    log_part = pkt_str[:start_idx].strip()
-                                    if log_part:
-                                        for line in log_part.split('\r\n'):
-                                            if line.strip():
-                                                print(f"[STM32 Log] {line.strip()}")
-                                    
-                                    # 2. 提取最外层 {} 包裹的纯 JSON 数据进行反序列化
                                     json_str = pkt_str[start_idx:end_idx + 1]
                                     obj = json.loads(json_str)
                                     self.callback("on_response", obj)
                                 else:
-                                    # 3. 纯系统日志行，不进行 JSON 解析，直接友好输出
-                                    for line in pkt_str.split('\r\n'):
-                                        if line.strip():
-                                            print(f"[STM32 Log] {line.strip()}")
+                                    # B. 如果是以 R, W, T 开头的极简 CSV 应答，在底层透明封装为 JSON 字典，无缝兼容 UI 层
+                                    if pkt_str.startswith(("R,", "W,", "T,")):
+                                        parts = pkt_str.split(",")
+                                        cmd_type = parts[0]
+                                        obj = {}
+                                        if cmd_type == 'W':  # W,ch,code
+                                            obj = {
+                                                "command": "config_write",
+                                                "ch": int(parts[1]),
+                                                "code": parts[2]
+                                            }
+                                        elif cmd_type == 'R':  # R,ch,code,closed,released
+                                            obj = {
+                                                "command": "config_read_response",
+                                                "ch": int(parts[1]),
+                                                "code": parts[2],
+                                                "closed": int(parts[3]),
+                                                "released": int(parts[4])
+                                            }
+                                        elif cmd_type == 'T':  # T,ch,code
+                                            obj = {
+                                                "command": "servo_trigger",
+                                                "ch": int(parts[1]),
+                                                "code": parts[2],
+                                                "action": "release" if parts[1] == "1" else "close"
+                                            }
+                                        self.callback("on_response", obj)
+                                    else:
+                                        # C. 纯系统文本日志，直接打印
+                                        for line in pkt_str.split('\r\n'):
+                                            if line.strip():
+                                                print(f"[STM32 Log] {line.strip()}")
                             except Exception as e:
-                                # 只有当提取出的 json_str 语法确实错误时才进行底层报错
-                        
                                 pass
                     else:
                         time.sleep(0.02)
@@ -142,7 +158,7 @@ class Stm32Serial:
 
 
 # ============================================================
-#  UI
+#  UI 界面显示层 (保持不变，无缝对接 CSV 桥接层)
 # ============================================================
 class App:
     def __init__(self, root):
@@ -174,7 +190,6 @@ class App:
             frame_ch = ttk.LabelFrame(root, text=f"通道 {ch}", padding=10)
             frame_ch.pack(fill="x", padx=10, pady=5)
 
-            # 声明数据变量并 append 进列表
             self.channels.append({
                 "closed": tk.StringVar(value="--"),
                 "released": tk.StringVar(value="--"),
@@ -184,18 +199,18 @@ class App:
                 "released_entry": tk.StringVar(value="2000"),
             })
 
-            # 当前实时状态 
-            ttk.Label(frame_ch, text="当前实时状态:", font=("", 10, "bold")).grid(row=0, column=0, sticky="w", columnspan=3)
+            ttk.Label(frame_ch, text="当前实时状态:", font=("", 10, "bold")).grid(row=0, column=0, sticky="w",
+                                                                                  columnspan=3)
             self._add_row(frame_ch, 1, "当前 PWM 值：", "current_pwm")
             self._add_row(frame_ch, 2, "当前状态：", "state")
 
-            # 已保存配置
-            ttk.Label(frame_ch, text="已保存配置:", font=("", 10, "bold")).grid(row=3, column=0, sticky="w", columnspan=3, pady=(8,0))
+            ttk.Label(frame_ch, text="已保存配置:", font=("", 10, "bold")).grid(row=3, column=0, sticky="w",
+                                                                                columnspan=3, pady=(8, 0))
             self._add_row(frame_ch, 4, "闭合 PWM：", "closed")
             self._add_row(frame_ch, 5, "投掷 PWM：", "released")
 
-            # 新配置输入
-            ttk.Label(frame_ch, text="新配置:", font=("", 10, "bold")).grid(row=6, column=0, sticky="w", columnspan=3, pady=(8,0))
+            ttk.Label(frame_ch, text="新配置:", font=("", 10, "bold")).grid(row=6, column=0, sticky="w", columnspan=3,
+                                                                            pady=(8, 0))
             self._add_entry_row(frame_ch, 7, "闭合 PWM：", "closed_entry")
             self._add_entry_row(frame_ch, 8, "投掷 PWM：", "released_entry")
 
@@ -229,10 +244,6 @@ class App:
         entry = ttk.Entry(parent, textvariable=self.channels[-1][key], width=12)
         entry.grid(row=row, column=1, sticky="w")
 
-    # ============================================================
-    #  事件处理
-    # ============================================================
-
     def _on_event(self, event, data):
         if event == "on_connected":
             self.root.after(0, self._on_connected)
@@ -244,18 +255,19 @@ class App:
     def _on_connected(self):
         self.btn_connect.config(text="断开")
         self.lbl_status.config(text="已连接", foreground="green")
-        self._log("串口已连接")
-        time.sleep(0.3)
-        self._read_config(0)
-        self._read_config(1)
+        self._log("串口已连接，正在等待设备初始化...")
+
+        # 异步开机读取，完美避开冲突
+        self.root.after(1500, lambda: self._read_config(0))
+        self.root.after(1700, lambda: self._read_config(1))
 
     def _on_disconnected(self, reason):
+        self.stm32.disconnect()
         self.btn_connect.config(text="连接")
         self.lbl_status.config(text="未连接", foreground="red")
         self._log(f"断开: {reason}")
 
     def _on_response(self, resp):
-        # 调试打印：收到 STM32 的原始应答数据 (输出到 Terminal)
         print(f"[PC Debug] 收到应答 <- {resp}")
 
         cmd = resp.get("command", "")
@@ -271,20 +283,20 @@ class App:
                 self.channels[ch]["released"].set(released_val)
                 self.channels[ch]["closed_entry"].set(closed_val)
                 self.channels[ch]["released_entry"].set(released_val)
-            
-            # 日志展示
             self._log(f"CH{ch} 配置已读取: closed={closed_val}, released={released_val}")
-            print(f"[PC Debug] CH{ch} 配置刷新成功 - closed: {closed_val}, released: {released_val}")
 
         elif cmd == "config_write":
+            if "code" not in resp:
+                return
             if code == "200":
                 self._log(f"CH{ch} 配置写入成功")
-                self._read_config(ch)
             else:
                 self._log(f"CH{ch} 配置写入失败: {msg}")
 
         elif cmd == "servo_trigger":
-            action = resp.get("action", "")
+            if "code" not in resp:
+                return
+            action = resp.get("action", "release" if ch == 1 else "close")
             if code == "200":
                 self._log(f"CH{ch} {action} 执行成功")
             else:
@@ -293,10 +305,6 @@ class App:
         elif cmd == "servo_status":
             self.channels[ch]["current_pwm"].set(resp.get("pwm", "--"))
             self.channels[ch]["state"].set(resp.get("state", "--"))
-
-    # ============================================================
-    #  操作
-    # ============================================================
 
     def _toggle_connect(self):
         if self.stm32.is_connected():
@@ -327,35 +335,29 @@ class App:
         except ValueError:
             messagebox.showwarning("提示", "请输入有效数字")
             return
-        cmd = {
-            "command": "config_write",
-            "ch": ch,
-            "closed": closed,
-            "released": released
-        }
-        self.stm32.send_json(cmd)
+
+        if closed < 500 or closed > 2500 or released < 500 or released > 2500:
+            messagebox.showwarning("提示", "标定脉宽超出安全限幅 (推荐 500~2500 微秒)")
+            return
+
+        # 写入命令改为极简 CSV： W,ch,closed,released
+        self.stm32.send_csv(f"W,{ch},{closed},{released}")
         self._log(f"写入 CH{ch}: closed={closed}, released={released}")
 
     def _read_config(self, ch):
         if not self.stm32.is_connected():
             return
-        cmd = {
-            "command": "config_read",
-            "ch": ch
-        }
-        self.stm32.send_json(cmd)
+        # 读取命令改为极简 CSV： R,ch
+        self.stm32.send_csv(f"R,{ch}")
         print(f"[PC Debug] 触发读取 CH{ch} 配置指令")
 
     def _trigger(self, ch, action):
         if not self.stm32.is_connected():
             messagebox.showwarning("提示", "请先连接串口")
             return
-        cmd = {
-            "command": "servo_trigger",
-            "ch": ch,
-            "action": action
-        }
-        self.stm32.send_json(cmd)
+        action_val = 1 if action == "release" else 0
+        # 触发指令改为极简 CSV： T,ch,action_val
+        self.stm32.send_csv(f"T,{ch},{action_val}")
         self._log(f"触发 CH{ch}: {action}")
 
     def _log(self, msg):
@@ -366,9 +368,6 @@ class App:
         self.log.config(state="disabled")
 
 
-# ============================================================
-#  启动
-# ============================================================
 if __name__ == "__main__":
     root = tk.Tk()
     app = App(root)
