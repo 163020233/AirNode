@@ -169,30 +169,23 @@ class App:
             self.channels.append({
                 "closed": tk.StringVar(value="--"),
                 "released": tk.StringVar(value="--"),
-                "current_pwm": tk.StringVar(value="--"),
-                "state": tk.StringVar(value="--"),
                 "closed_entry": tk.StringVar(value="1500"),
                 "released_entry": tk.StringVar(value="2000"),
             })
 
-            # 当前实时状态
-            ttk.Label(frame_ch, text="当前实时状态:", font=("", 10, "bold")).grid(row=0, column=0, sticky="w", columnspan=3)
-            self._add_row(frame_ch, 1, "当前 PWM 值：", "current_pwm")
-            self._add_row(frame_ch, 2, "当前状态：", "state")
-
             # 已保存配置
-            ttk.Label(frame_ch, text="已保存配置:", font=("", 10, "bold")).grid(row=3, column=0, sticky="w", columnspan=3, pady=(8,0))
-            self._add_row(frame_ch, 4, "闭合 PWM：", "closed")
-            self._add_row(frame_ch, 5, "投掷 PWM：", "released")
+            ttk.Label(frame_ch, text="已保存配置:", font=("", 10, "bold")).grid(row=0, column=0, sticky="w", columnspan=3)
+            self._add_row(frame_ch, 1, "闭合 PWM：", "closed")
+            self._add_row(frame_ch, 2, "投掷 PWM：", "released")
 
             # 新配置输入
-            ttk.Label(frame_ch, text="新配置:", font=("", 10, "bold")).grid(row=6, column=0, sticky="w", columnspan=3, pady=(8,0))
-            self._add_entry_row(frame_ch, 7, "闭合 PWM：", "closed_entry")
-            self._add_entry_row(frame_ch, 8, "投掷 PWM：", "released_entry")
+            ttk.Label(frame_ch, text="新配置:", font=("", 10, "bold")).grid(row=3, column=0, sticky="w", columnspan=3, pady=(8,0))
+            self._add_entry_row(frame_ch, 4, "闭合 PWM：", "closed_entry")
+            self._add_entry_row(frame_ch, 5, "投掷 PWM：", "released_entry")
 
             # 操作按钮
             btn_frame = ttk.Frame(frame_ch)
-            btn_frame.grid(row=9, column=0, columnspan=3, pady=5)
+            btn_frame.grid(row=6, column=0, columnspan=3, pady=5)
             ttk.Button(btn_frame, text="写入配置",
                        command=lambda c=ch: self._write_config(c)).pack(side="left", padx=5)
             ttk.Button(btn_frame, text="读取配置",
@@ -285,8 +278,7 @@ class App:
                 self._log(f"CH{ch} {action} 执行失败: {msg}")
 
         elif cmd == "servo_status":
-            self.channels[ch]["current_pwm"].set(resp.get("pwm", "--"))
-            self.channels[ch]["state"].set(resp.get("state", "--"))
+            pass  # 已删除实时状态显示
 
     # ============================================================
     #  操作
