@@ -22,7 +22,7 @@ extern "C" {
  */
 
 #ifndef DEBUG_MODE
-#define DEBUG_MODE 1
+#define DEBUG_MODE 0
 #endif
 
 /* ======================== 日志级别 ======================== */
@@ -37,7 +37,7 @@ extern "C" {
 #if DEBUG_MODE
 #define LOG_LEVEL LOG_LEVEL_DEBUG
 #else
-#define LOG_LEVEL LOG_LEVEL_WARN
+#define LOG_LEVEL LOG_LEVEL_DEBUG
 #endif
 
 /* ======================== 日志宏 ======================== */

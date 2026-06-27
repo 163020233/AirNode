@@ -75,7 +75,7 @@ const osThreadAttr_t ServoTask_attributes = {
 osThreadId_t SerialTaskHandle;
 const osThreadAttr_t SerialTask_attributes = {
   .name = "SerialTask",
-  .stack_size = 512 * 4,
+  .stack_size = 256* 4,
   .priority = (osPriority_t) osPriorityAboveNormal,
 };
 /* Definitions for NetQueue */
@@ -106,14 +106,14 @@ static int safe_json_get_int(const char *json, const char *key, int *val);
 /**
  * @brief 统一发送应答函数 (同时回复网口 TCP 和 串口 UART)
  */
-// static void send_response(const char *msg)
-// {
-//   // 1. 发送给网络任务 (回传给 Android App)
-//   osMessageQueuePut(SendQueueHandle, msg, 0, 0);
-//
-//   // 2. 同步发送回串口 (回传给 Python 配置工具)
-//   HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
-// }
+static void send_response(const char *msg)
+{
+  // 1. 发送给网络任务 (回传给 Android App)
+  osMessageQueuePut(SendQueueHandle, msg, 0, 0);
+
+  // 2. 同步发送回串口 (回传给 Python 配置工具)
+  HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+}
 /* USER CODE END FunctionPrototypes */
 /* USER CODE END FunctionPrototypes */
 
@@ -225,7 +225,7 @@ void StartNetTask(void *argument)
     }
     else if (len == -1)
     {
-      // LOG_DEBUG(TAG_RTOS, "Client disconnected, re-listening...");
+      LOG_DEBUG(TAG_RTOS, "Client disconnected, re-listening...");
       w5500_tcp_close();
       w5500_tcp_server_open(W5500_TCP_PORT);
       osDelay(100);
@@ -265,102 +265,132 @@ void StartRouterTask(void *argument)
     osMessageQueueGet(NetQueueHandle, net_buf, NULL, osWaitForever);
     net_buf[NET_BUF_SIZE - 1] = '\0';
 
-    // LOG_INFO(TAG_RTOS, "RAW: %s", (const char *)net_buf);
+    LOG_INFO(TAG_RTOS, "RAW: %s", (const char *)net_buf);
 
-    // 核心桥接选择：如果数据包以 '{' 开头，说明是安卓发来的网口 JSON 报文
-    if (net_buf[0] == '{')
+    cseq[0] = '\0';
+    json_get_string((const char *)net_buf, "cseq", cseq, sizeof(cseq));
+
+    command[0] = '\0';
+    if (json_get_string((const char *)net_buf, "command", command, sizeof(command)) != 0)
     {
-      cseq[0] = '\0';
-      json_get_string((const char *)net_buf, "cseq", cseq, sizeof(cseq));
-      command[0] = '\0';
-      if (json_get_string((const char *)net_buf, "command", command, sizeof(command)) != 0)
-      {
-        continue;
-      }
-
-      /* 1. 处理安卓 JSON 触发命令 */
-      if (strcmp(command, "servo_trigger") == 0)
-      {
-        int ch = 0;
-        char action[16] = "close";
-        safe_json_get_int((const char *)net_buf, "ch", &ch);
-        json_get_string((const char *)net_buf, "action", action, sizeof(action));
-
-        if (ch >= 0 && ch < FLASH_CHANNEL_COUNT) {
-          const FlashChannelConfig *cfg = flash_get_config((uint8_t)ch);
-          int target_pwm = (strcmp(action, "release") == 0) ? cfg->released_pwm : cfg->closed_pwm;
-          servo_set_pwm_us((uint8_t)ch, (uint16_t)target_pwm);
-          // snprintf(resp, sizeof(resp), "{\"command\":\"servo_trigger\",\"code\":\"200\",\"ch\":%d,\"action\":\"%s\",\"msg\":\"ok\"}" MSG_DELIMITER, ch, action);
-          osMessageQueuePut(SendQueueHandle, resp, 0, 0); // 仅回发给网口
-        }
-      }
-      /* 2. 处理安卓 传统角度控制 */
-      else if (strcmp(command, "servo_set") == 0)
-      {
-        channel = 0; angle = 90;
-        safe_json_get_int((const char *)net_buf, "ch", &channel);
-        safe_json_get_int((const char *)net_buf, "angle", &angle);
-        if (angle < 0) angle = 0;
-        if (angle > 180) angle = 180;
-        osMessageQueuePut(ServoQueueHandle, &angle, 0, 0);
-        // snprintf(resp, sizeof(resp), "{\"command\":\"servo_set\",\"code\":\"200\",\"cseq\":\"%s\",\"msg\":\"ok\"}" MSG_DELIMITER, cseq);
-        osMessageQueuePut(SendQueueHandle, resp, 0, 0);
-      }
+      LOG_DEBUG(TAG_RTOS, "No command found, skip");
+      continue;
     }
-    // 如果不以 '{' 开头，说明是 PC 上位机通过串口发来的极简 CSV 文本包
+
+    LOG_INFO(TAG_RTOS, "Command: %s", command);
+
+    /* ======================== 指令路由 ======================== */
+
+    /* ---- Flash 配置读取 ---- */
+    if (strcmp(command, "config_read") == 0)
+    {
+      int ch = 0;
+      safe_json_get_int((const char *)net_buf, "ch", &ch);
+
+      if (ch >= 0 && ch < FLASH_CHANNEL_COUNT) {
+        const FlashChannelConfig *cfg = flash_get_config((uint8_t)ch);
+        LOG_INFO(TAG_SYSTEM, "config_read: ch=%d", ch);
+        snprintf(resp, sizeof(resp),
+                 "{\"command\":\"config_read_response\",\"code\":\"200\",\"cseq\":\"%s\","
+                 "\"ch\":%d,\"closed\":%d,\"released\":%d}"
+                 MSG_DELIMITER,
+                 cseq, ch, cfg->closed_pwm, cfg->released_pwm);
+      } else {
+        snprintf(resp, sizeof(resp),
+                 "{\"command\":\"config_read_response\",\"code\":\"400\",\"cseq\":\"%s\",\"msg\":\"bad ch\"}"
+                 MSG_DELIMITER, cseq);
+      }
+      send_response(resp); // 核心修复：使用统一应答
+    }
+    /* ---- Flash 配置写入 ---- */
+    else if (strcmp(command, "config_write") == 0)
+    {
+      int ch = 0;
+      int closed = 0;
+      int released = 0;
+
+      safe_json_get_int((const char *)net_buf, "ch", &ch);
+      safe_json_get_int((const char *)net_buf, "closed", &closed);
+      safe_json_get_int((const char *)net_buf, "released", &released);
+
+      LOG_INFO(TAG_SYSTEM, "Parsed Config Write - CH%d: closed=%d, released=%d", ch, closed, released);
+
+      if (ch >= 0 && ch < FLASH_CHANNEL_COUNT) {
+        if (flash_set_config((uint8_t)ch, (uint16_t)closed, (uint16_t)released) == 0) {
+          snprintf(resp, sizeof(resp),
+                   "{\"command\":\"config_write\",\"code\":\"200\",\"ch\":%d,\"cseq\":\"%s\",\"msg\":\"saved\"}"
+                   MSG_DELIMITER, ch, cseq);
+        } else {
+          snprintf(resp, sizeof(resp),
+                   "{\"command\":\"config_write\",\"code\":\"500\",\"ch\":%d,\"cseq\":\"%s\",\"msg\":\"flash error\"}"
+                   MSG_DELIMITER, ch, cseq);
+        }
+      } else {
+        snprintf(resp, sizeof(resp),
+                 "{\"command\":\"config_write\",\"code\":\"400\",\"ch\":%d,\"cseq\":\"%s\",\"msg\":\"bad ch\"}"
+                 MSG_DELIMITER, ch, cseq);
+      }
+      send_response(resp); // 核心修复：使用统一应答
+    }
+    /* ---- 抛投触发 ---- */
+    else if (strcmp(command, "servo_trigger") == 0)
+    {
+      int ch = 0;
+      char action[16] = "close";
+      safe_json_get_int((const char *)net_buf, "ch", &ch);
+      json_get_string((const char *)net_buf, "action", action, sizeof(action));
+
+      if (ch >= 0 && ch < FLASH_CHANNEL_COUNT) {
+        const FlashChannelConfig *cfg = flash_get_config((uint8_t)ch);
+        int target_pwm = cfg->closed_pwm;
+        if (strcmp(action, "release") == 0) target_pwm = cfg->released_pwm;
+
+        LOG_INFO(TAG_SYSTEM, "trigger: ch=%d, action=%s, pwm=%d", ch, action, target_pwm);
+
+        /* 直接设置 PWM，使用统一驱动接口 */
+        servo_set_pwm_us((uint8_t)ch, (uint16_t)target_pwm);
+
+        snprintf(resp, sizeof(resp),
+                 "{\"command\":\"servo_trigger\",\"code\":\"200\",\"ch\":%d,\"action\":\"%s\",\"cseq\":\"%s\",\"msg\":\"ok\"}"
+                 MSG_DELIMITER, ch, action, cseq);
+      } else {
+        snprintf(resp, sizeof(resp),
+                 "{\"command\":\"servo_trigger\",\"code\":\"400\",\"ch\":%d,\"cseq\":\"%s\",\"msg\":\"bad ch\"}"
+                 MSG_DELIMITER, ch, cseq);
+      }
+      send_response(resp); // 核心修复：使用统一应答
+    }
+    else if (strcmp(command, "servo_set") == 0)
+    {
+      channel = 0; angle = 90;
+      safe_json_get_int((const char *)net_buf, "ch", &channel);
+      safe_json_get_int((const char *)net_buf, "angle", &angle);
+      if (angle < 0) angle = 0;
+      if (angle > 180) angle = 180;
+      LOG_INFO(TAG_RTOS, "servo_set: ch=%d, angle=%d", channel, angle);
+      osMessageQueuePut(ServoQueueHandle, &angle, 0, 0);
+
+      LOG_DEBUG(TAG_RTOS, "Response sent");
+      snprintf(resp, sizeof(resp),
+               "{\"command\":\"servo_set\",\"code\":\"200\",\"cseq\":\"%s\",\"msg\":\"ok\"}"
+               MSG_DELIMITER, cseq);
+      send_response(resp); // 核心修复：使用统一应答
+    }
+    else if (strcmp(command, "servo_get") == 0)
+    {
+      LOG_INFO(TAG_RTOS, "servo_get");
+      snprintf(resp, sizeof(resp),
+               "{\"command\":\"servo_get\",\"code\":\"200\",\"cseq\":\"%s\",\"angle\":90}"
+               MSG_DELIMITER, cseq);
+      send_response(resp); // 核心修复：使用统一应答
+    }
     else
     {
-      char cmd_type = net_buf[0];
-      int ch = 0;
-      int val1 = 0;
-      int val2 = 0;
-
-      /* 1. 写入配置: W,ch,closed,released\r\n\r\n */
-      if (cmd_type == 'W')
-      {
-        if (sscanf((const char*)net_buf, "W,%d,%d,%d", &ch, &val1, &val2) == 3)
-        {
-          if (ch >= 0 && ch < FLASH_CHANNEL_COUNT) {
-            if (flash_set_config((uint8_t)ch, (uint16_t)val1, (uint16_t)val2) == 0) {
-              snprintf(resp, sizeof(resp), "W,%d,200\r\n\r\n", ch); // 成功响应
-            } else {
-              snprintf(resp, sizeof(resp), "W,%d,500\r\n\r\n", ch); // 写入失败
-            }
-          }
-          HAL_UART_Transmit(&huart1, (uint8_t*)resp, strlen(resp), 100); // 串口直回
-        }
-      }
-      /* 2. 读取配置: R,ch\r\n\r\n */
-      else if (cmd_type == 'R')
-      {
-        if (sscanf((const char*)net_buf, "R,%d", &ch) == 1)
-        {
-          if (ch >= 0 && ch < FLASH_CHANNEL_COUNT) {
-            const FlashChannelConfig *cfg = flash_get_config((uint8_t)ch);
-            snprintf(resp, sizeof(resp), "R,%d,200,%d,%d\r\n\r\n", ch, cfg->closed_pwm, cfg->released_pwm);
-          } else {
-            snprintf(resp, sizeof(resp), "R,%d,400,0,0\r\n\r\n", ch);
-          }
-          HAL_UART_Transmit(&huart1, (uint8_t*)resp, strlen(resp), 100);
-        }
-      }
-      /* 3. 触发动作: T,ch,action_val\r\n\r\n  (action_val: 0为闭合, 1为投掷) */
-      else if (cmd_type == 'T')
-      {
-        int action_val = 0;
-        if (sscanf((const char*)net_buf, "T,%d,%d", &ch, &action_val) == 2)
-        {
-          if (ch >= 0 && ch < FLASH_CHANNEL_COUNT) {
-            const FlashChannelConfig *cfg = flash_get_config((uint8_t)ch);
-            int target_pwm = (action_val == 1) ? cfg->released_pwm : cfg->closed_pwm;
-            servo_set_pwm_us((uint8_t)ch, (uint16_t)target_pwm);
-            snprintf(resp, sizeof(resp), "T,%d,200\r\n\r\n", ch);
-          } else {
-            snprintf(resp, sizeof(resp), "T,%d,400\r\n\r\n", ch);
-          }
-          HAL_UART_Transmit(&huart1, (uint8_t*)resp, strlen(resp), 100);
-        }
-      }
+      LOG_INFO(TAG_RTOS, "Unknown: %s", command);
+      snprintf(resp, sizeof(resp),
+               "{\"command\":\"%s\",\"code\":\"400\",\"cseq\":\"%s\",\"msg\":\"unknown\"}"
+               MSG_DELIMITER, command, cseq);
+      send_response(resp); // 核心修复：使用统一应答
     }
   }
   /* USER CODE END StartRouterTask */
@@ -370,92 +400,83 @@ void StartServoTask(void *argument)
 {
   /* USER CODE BEGIN StartServoTask */
   int angle;
-  // LOG_INFO(TAG_SERVO, "ServoTask started");
+  LOG_INFO(TAG_SERVO, "ServoTask started");
   servo_init();
   for(;;)
   {
-    // LOG_INFO(TAG_SERVO, "Waiting for angle...");
+    LOG_INFO(TAG_SERVO, "Waiting for angle...");
     osMessageQueueGet(ServoQueueHandle, &angle, NULL, osWaitForever);
     servo_set_angle(angle);
-    // LOG_INFO(TAG_SERVO, "Angle set done: %d", angle);
+    LOG_INFO(TAG_SERVO, "Angle set done: %d", angle);
   }
   /* USER CODE END StartServoTask */
 }
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN Application */
-void StartSerialTask(void *argument)
+
+/* 串口接收缓冲区（中断+主循环共享）*/
+static uint8_t s_uart_buf[512];
+static uint16_t s_uart_len = 0;
+
+/* 串口中断接收单字节缓存 */
+uint8_t g_rx_byte;
+
+/**
+ * @brief 串口中断接收回调
+ *        每收到1字节存入 s_uart_buf，检测到 \r\n\r\n 结束符后入 NetQueue
+ */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
-  /* USER CODE BEGIN StartSerialTask */
-  static uint8_t uart_buf[512];
-  static uint16_t uart_len = 0;
-
-  volatile uint32_t tmpreg = 0x00U;
-  tmpreg = huart1.Instance->SR;
-  tmpreg = huart1.Instance->DR;
-  (void)tmpreg;
-
-  for (;;)
+  if (huart->Instance == USART1)
   {
-    uint8_t ch;
-    if (HAL_UART_Receive(&huart1, &ch, 1, 5) == HAL_OK)
-    {
-      /* 核心首字节过滤：
-            - 如果是 Android 网口 JSON，首字是 '{'
-            - 如果是 PC 串口 CSV，首字是 'W'、'R' 或 'T'
-            - 丢弃除此之外所有的前导电气噪声、零字节 \x00 等乱码 */
-      if (uart_len == 0)
-      {
-        if (ch != '{' && ch != 'W' && ch != 'R' && ch != 'T')
-        {
-          continue;
-        }
-      }
+    /* 注意！非DMA模式时 rx_byte 存的是当前收到的字节 */
+    /* 实际 rx_byte 是 StartSerialTask 中定义的局部 static，但在中断里不可见 */
+    /* 所以直接从 huart 实例获取最后接收的字节 */
+    extern uint8_t g_rx_byte;
+    uint8_t ch = g_rx_byte;
 
-      if (uart_len < sizeof(uart_buf) - 1)
+    if (s_uart_len < sizeof(s_uart_buf) - 1)
+    {
+      s_uart_buf[s_uart_len++] = ch;
+
+      /* 检测 \r\n\r\n 分隔符 */
+      if (s_uart_len >= 4 &&
+          s_uart_buf[s_uart_len - 4] == '\r' &&
+          s_uart_buf[s_uart_len - 3] == '\n' &&
+          s_uart_buf[s_uart_len - 2] == '\r' &&
+          s_uart_buf[s_uart_len - 1] == '\n')
       {
-        uart_buf[uart_len++] = ch;
-        if (uart_len >= 4 &&
-            uart_buf[uart_len - 4] == '\r' &&
-            uart_buf[uart_len - 3] == '\n' &&
-            uart_buf[uart_len - 2] == '\r' &&
-            uart_buf[uart_len - 1] == '\n')
-        {
-          uart_buf[uart_len] = '\0';
-          osMessageQueuePut(NetQueueHandle, uart_buf, 0, 0);
-          uart_len = 0;
-        }
-      }
-      else
-      {
-        uart_len = 0;
+        s_uart_buf[s_uart_len] = '\0';
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        osMessageQueuePut(NetQueueHandle, s_uart_buf, 0, 0);
+        s_uart_len = 0;
       }
     }
     else
     {
-      uart_len = 0;
-
-      // 1. 获取硬件错误状态
-      uint32_t err = HAL_UART_GetError(&huart1);
-
-      // 2. 物理读取清除 ORE/FE 错误
-      volatile uint32_t err_clear = huart1.Instance->SR;
-      err_clear = huart1.Instance->DR;
-      (void)err_clear;
-
-      // 3. 根据错误类型实施差异化调度
-      if (err == HAL_UART_ERROR_NONE)
-      {
-        /* 如果是正常的空闲超时（无错误），安全延时 5ms 释放 CPU */
-        osDelay(5);
-      }
-      else
-      {
-        /* 如果是 ORE/FE 硬件错误，说明后续字符正在涌入，绝对不能延时！ */
-        /* 延迟 0ms（让出当前时间片后立刻返回），以最高速度抢收后续字符，彻底打碎溢出死锁！ */
-        osDelay(0);
-      }
+      s_uart_len = 0;
     }
+
+    /* 重新开启下一字节中断接收 */
+    HAL_UART_Receive_IT(&huart1, &g_rx_byte, 1);
+  }
+}
+
+void StartSerialTask(void *argument)
+{
+  /* USER CODE BEGIN StartSerialTask */
+  s_uart_len = 0;
+
+  LOG_INFO(TAG_RTOS, "SerialTask started, enabling UART interrupt RX...");
+
+  /* 使用全局变量 g_rx_byte 作为中断接收缓冲区 */
+  g_rx_byte = 0;
+  HAL_UART_Receive_IT(&huart1, &g_rx_byte, 1);
+
+  for (;;)
+  {
+    osDelay(500);  // 降低打印频率，避免干扰
   }
   /* USER CODE END StartSerialTask */
 }
