@@ -108,22 +108,13 @@ class Stm32Serial:
                                 end_idx = pkt_str.rfind("}")
 
                                 if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                                    # 1. 如果混合包中含有系统日志，先将日志剥离并输出
-                                    log_part = pkt_str[:start_idx].strip()
-                                    if log_part:
-                                        for line in log_part.split('\r\n'):
-                                            if line.strip():
-                                                print(f"[STM32 Log] {line.strip()}")
-
-                                    # 2. 提取最外层 {} 包裹的纯 JSON 数据进行反序列化
+                                    # 提取最外层 {} 包裹的纯 JSON 数据进行反序列化
                                     json_str = pkt_str[start_idx:end_idx + 1]
                                     obj = json.loads(json_str)
                                     self.callback("on_response", obj)
                                 else:
-                                    # 3. 纯系统日志行，不进行 JSON 解析，直接友好输出
-                                    for line in pkt_str.split('\r\n'):
-                                        if line.strip():
-                                            print(f"[STM32 Log] {line.strip()}")
+                                    # 非 JSON 数据，直接丢弃（不显示日志）
+                                    pass
                             except Exception as e:
                                 # 只有当提取出的 json_str 语法确实错误时才进行底层报错
 
@@ -283,7 +274,6 @@ class App:
         elif cmd == "config_write":
             if code == "200":
                 self._log(f"CH{ch} 配置写入成功")
-                self._read_config(ch)
             else:
                 self._log(f"CH{ch} 配置写入失败: {msg}")
 

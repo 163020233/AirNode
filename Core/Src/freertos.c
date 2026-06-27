@@ -468,8 +468,6 @@ void StartSerialTask(void *argument)
   /* USER CODE BEGIN StartSerialTask */
   s_uart_len = 0;
 
-  LOG_INFO(TAG_RTOS, "SerialTask started, enabling UART interrupt RX...");
-
   /* 使用全局变量 g_rx_byte 作为中断接收缓冲区 */
   g_rx_byte = 0;
   HAL_UART_Receive_IT(&huart1, &g_rx_byte, 1);
